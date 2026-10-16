@@ -1,0 +1,22 @@
+[package]
+name = "penguin-viewer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.36.2"
+image = { version = "0.25.10", features = ["avif-native"] }
+resvg = "0.48.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
+codegen-units = 1
+
+# Decoding a large JPEG unoptimised takes seconds, so dependencies are optimised in debug builds too.
+[profile.dev.package."*"]
+opt-level = 3
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
