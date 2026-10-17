@@ -411,32 +411,21 @@ impl Viewer {
         );
     }
 
-    /// Floating bar at the bottom: prev/next, name, position, size, zoom and view buttons.
+    /// Two floating pills: name and prev/next at the top, size, zoom and view tools at the bottom.
     fn bar(&mut self, ui: &mut egui::Ui, view: Rect, a: f32) {
         let ctx = ui.ctx().clone();
         let p = ui.painter().clone().with_layer_id(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("bar")));
         let fade = |c: Color32| c.gamma_multiply(a);
-        let name = self.current().map(|p| files::name(p)).unwrap_or_default();
-        let name = ellipsize(&name, ((view.width() - 420.0) / 9.0).clamp(8.0, 60.0) as usize);
-        let mut info = format!("{} / {}", self.idx + 1, self.files.len());
-        if let Some(s) = self.pic_size() {
-            info += &format!("   {}×{}   {}%", s.x as u32, s.y as u32, (self.scale(view) * 100.0).round());
-        }
-        let name_g = p.layout_no_wrap(name, FontId::new(17.0, bold()), fade(INK));
-        let info_g = p.layout_no_wrap(info, FontId::proportional(15.0), fade(INK_3));
+        let (b, gap, h, pad) = (32.0, 12.0, 44.0, 8.0);
+        let avail = view.width() - 16.0;
+        let slide = (1.0 - a) * 14.0;
 
-        let b = 32.0;
-        let gap = 14.0;
-        let w = 2.0 * b + gap + name_g.size().x + gap + info_g.size().x + gap + 4.0 * b + 24.0;
-        let h = 46.0;
-        let rect = Rect::from_center_size(pos2(view.center().x, view.bottom() - 18.0 - h / 2.0 + (1.0 - a) * 14.0), vec2(w.min(view.width() - 16.0), h));
-        p.rect(rect, CornerRadius::same(23), fade(BAR), Stroke::new(1.0, fade(LINE)), egui::StrokeKind::Inside);
-        // the bar swallows clicks so they don't reach the image underneath
-        ui.interact(rect, egui::Id::new("bar-bg"), Sense::click_and_drag());
-
-        let mut x = rect.left() + 12.0;
-        let y = rect.center().y;
-        let button = |ui: &mut egui::Ui, x: &mut f32, icon: Icon, tip: &str| -> bool {
+        let pill = |ui: &mut egui::Ui, id: &str, rect: Rect| {
+            p.rect(rect, CornerRadius::same(22), fade(BAR), Stroke::new(1.0, fade(LINE)), egui::StrokeKind::Inside);
+            // the pill swallows clicks so they don't reach the image underneath
+            ui.interact(rect, egui::Id::new(("pill", id)), Sense::click_and_drag());
+        };
+        let button = |ui: &mut egui::Ui, x: &mut f32, y: f32, icon: Icon, tip: &str| -> bool {
             let r = Rect::from_center_size(pos2(*x + b / 2.0, y), Vec2::splat(b));
             *x += b;
             let resp = ui.interact(r, egui::Id::new(("bar", tip)), Sense::click()).on_hover_text(tip);
@@ -447,30 +436,67 @@ impl Viewer {
             paint_icon(&p, r.shrink(9.0), icon, fade(if resp.hovered() { INK } else { INK_3 }));
             resp.clicked()
         };
+
+        // ---- top: ‹  name  3 / 12  ›   (the position goes before the name is squeezed)
+        let pos_g = p.layout_no_wrap(format!("{} / {}", self.idx + 1, self.files.len()), FontId::proportional(15.0), fade(INK_3));
+        let fixed = 2.0 * pad + 2.0 * b + 2.0 * gap;
+        let name = self.current().map(|p| files::name(p)).unwrap_or_default();
+        let name_font = FontId::new(17.0, bold());
+        let full_name = p.layout_no_wrap(name.clone(), name_font.clone(), INK).size().x;
+        let show_pos = fixed + full_name.min(90.0) + gap + pos_g.size().x <= avail;
+        let pos_w = if show_pos { gap + pos_g.size().x } else { 0.0 };
+        let name_g = fit_text(&p, &name, name_font, (avail - fixed - pos_w).clamp(0.0, 520.0), fade(INK));
+        let w = fixed + name_g.size().x + pos_w;
+        let top = Rect::from_center_size(pos2(view.center().x, view.top() + 14.0 + h / 2.0 - slide), vec2(w, h));
+        pill(ui, "top", top);
+        let (mut x, y) = (top.left() + pad, top.center().y);
         let many = self.files.len() > 1;
-        if button(ui, &mut x, Icon::Prev, "previous  (left arrow)") && many {
+        if button(ui, &mut x, y, Icon::Prev, "previous  (left arrow)") && many {
             self.step(-1);
-        }
-        if button(ui, &mut x, Icon::Next, "next  (right arrow)") && many {
-            self.step(1);
         }
         x += gap;
         p.galley(pos2(x, y - name_g.size().y / 2.0), name_g.clone(), INK);
-        x += name_g.size().x + gap;
-        p.galley(pos2(x, y - info_g.size().y / 2.0), info_g.clone(), INK_3);
-        x += info_g.size().x + gap;
+        x += name_g.size().x;
+        if show_pos {
+            x += gap;
+            p.galley(pos2(x, y - pos_g.size().y / 2.0), pos_g.clone(), INK_3);
+            x += pos_g.size().x;
+        }
+        x += gap;
+        if button(ui, &mut x, y, Icon::Next, "next  (right arrow)") && many {
+            self.step(1);
+        }
+
+        // ---- bottom: 1600×900  62%  |  fit  1:1  rotate  fullscreen   (drops the size, then the zoom)
+        let Some(s) = self.pic_size() else { return };
+        let tools = 4.0 * b;
+        let zoom = format!("{}%", (self.scale(view) * 100.0).round());
+        let info = [format!("{}×{}   {zoom}", s.x as u32, s.y as u32), zoom, String::new()]
+            .into_iter()
+            .map(|t| (!t.is_empty()).then(|| p.layout_no_wrap(t, FontId::proportional(15.0), fade(INK_3))))
+            .find(|g| 2.0 * pad + tools + g.as_ref().map_or(0.0, |g| g.size().x + 2.0 * gap) <= avail)
+            .flatten();
+        let info_w = info.as_ref().map_or(0.0, |g| g.size().x + 2.0 * gap);
+        let bot = Rect::from_center_size(pos2(view.center().x, view.bottom() - 14.0 - h / 2.0 + slide), vec2(2.0 * pad + info_w + tools, h));
+        pill(ui, "bottom", bot);
+        let (mut x, y) = (bot.left() + pad, bot.center().y);
+        if let Some(g) = info {
+            x += gap;
+            p.galley(pos2(x, y - g.size().y / 2.0), g.clone(), INK_3);
+            x += g.size().x + gap;
+        }
         let c = view.center();
-        if button(ui, &mut x, Icon::Fit, "fit to window  0") {
+        if button(ui, &mut x, y, Icon::Fit, "fit to window  0") {
             self.fit();
         }
-        if button(ui, &mut x, Icon::Actual, "actual size  1") {
+        if button(ui, &mut x, y, Icon::Actual, "actual size  1") {
             self.actual(&ctx, c);
         }
-        if button(ui, &mut x, Icon::Rotate, "rotate  R") {
+        if button(ui, &mut x, y, Icon::Rotate, "rotate  R") {
             self.rotate(1);
         }
         let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-        if button(ui, &mut x, Icon::Full, "fullscreen  F") {
+        if button(ui, &mut x, y, Icon::Full, "fullscreen  F") {
             ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!full));
         }
     }
@@ -529,6 +555,18 @@ fn message(p: &Painter, view: Rect, head: &str, sub: &str) {
     let c = view.center();
     p.text(c - vec2(0.0, 14.0), Align2::CENTER_CENTER, head, FontId::new(24.0, bold()), INK);
     p.text(c + vec2(0.0, 18.0), Align2::CENTER_CENTER, ellipsize(sub, 90), FontId::proportional(15.0), INK_3);
+}
+
+/// `s` laid out in one line, cut in the middle with "…" until it is at most `max_w` wide.
+fn fit_text(p: &Painter, s: &str, font: FontId, max_w: f32, color: Color32) -> Arc<egui::Galley> {
+    let mut n = s.chars().count();
+    loop {
+        let g = p.layout_no_wrap(ellipsize(s, n), font.clone(), color);
+        if g.size().x <= max_w || n <= 2 {
+            return g;
+        }
+        n -= 1;
+    }
 }
 
 fn ellipsize(s: &str, max: usize) -> String {
@@ -633,6 +671,7 @@ mod tests {
             tall.save(d.join("img10.jpg")).unwrap();
             std::fs::write(d.join("img3.png"), b"not a png").unwrap();
             std::fs::write(d.join("notes.txt"), b"skip me").unwrap();
+            std::fs::copy(d.join("img2.png"), d.join("a-very-long-wallpaper-name-from-the-internet-4k.png")).unwrap();
             std::fs::write(
                 d.join("logo.svg"),
                 br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32"><rect width="64" height="32" rx="6" fill="#d94d2a"/></svg>"##,
@@ -664,8 +703,8 @@ mod tests {
     fn lists_folder_in_order() {
         let v = Viewer::new(Some(dir("lists_folder_in_order").join("img2.png")));
         let names: Vec<String> = v.files.iter().map(|p| files::name(p)).collect();
-        assert_eq!(names, ["img2.png", "img3.png", "img10.jpg", "logo.svg"]);
-        assert_eq!(v.idx, 0);
+        assert_eq!(v.idx, 1);
+        assert_eq!(names, ["a-very-long-wallpaper-name-from-the-internet-4k.png", "img2.png", "img3.png", "img10.jpg", "logo.svg"]);
     }
 
     #[test]
@@ -695,9 +734,9 @@ mod tests {
         let ctx = h.ctx.clone();
         h.state_mut().wait(&ctx);
         h.run_steps(2);
-        assert_eq!(h.state().idx, 1);
+        assert_eq!(h.state().idx, 2);
         assert_eq!(h.state().rot, 0);
-        assert!(matches!(h.state().cache.get(&h.state().files[1]), Some(Slot::Failed(_))));
+        assert!(matches!(h.state().cache.get(&h.state().files[2]), Some(Slot::Failed(_))));
         shot(&mut h, "04-broken");
 
         h.key_press(Key::ArrowRight);
@@ -705,7 +744,7 @@ mod tests {
         let ctx = h.ctx.clone();
         h.state_mut().wait(&ctx);
         h.run_steps(2);
-        assert_eq!(h.state().idx, 2);
+        assert_eq!(h.state().idx, 3);
         shot(&mut h, "05-tall");
 
         // the SVG keeps its own size, drawn from a sharper texture
@@ -730,6 +769,21 @@ mod tests {
         let mut h = harness(Viewer::new(Some(PathBuf::from(p))));
         assert!(matches!(h.state().cache.get(&h.state().files[h.state().idx]), Some(Slot::Ready(_))));
         shot(&mut h, "07-real");
+    }
+
+    #[test]
+    fn narrow_window_bar_fits() {
+        for (w, name) in [(420.0, "08-narrow"), (300.0, "09-narrower"), (640.0, "10-medium")] {
+            let mut h = Harness::builder()
+                .with_size([w, 300.0])
+                .wgpu()
+                .build_ui_state(|ui, v: &mut Viewer| v.draw(ui), Viewer::new(Some(dir("narrow").join("a-very-long-wallpaper-name-from-the-internet-4k.png"))));
+            h.run_steps(3);
+            let ctx = h.ctx.clone();
+            h.state_mut().wait(&ctx);
+            h.run_steps(3);
+            shot(&mut h, name);
+        }
     }
 
     #[test]

@@ -1,13 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="-6 -5 44 44">
 <rect x="-6" y="-5" width="44" height="44" rx="9" fill="#f6f1e6"/>
 <rect x="-5" y="-4" width="42" height="42" rx="8" fill="none" stroke="#1a1614" stroke-width="1.2"/>
-<g transform="rotate(-8 12 10)">
-<rect x="-1.5" y="-0.5" width="25" height="19" rx="2" fill="#fbf7ec" stroke="#1a1614" stroke-width="1.2"/>
-<rect x="1" y="2" width="20" height="13" rx="1" fill="#9fc6e0"/>
-<circle cx="16.5" cy="5.5" r="2" fill="#f0c12b"/>
-<path d="M1 15 L7.5 7.5 L12 12.5 L15 10 L21 15 Z" fill="#3d6b4f"/>
-</g>
-<g transform="translate(9 9.5) scale(0.72)">
-<ellipse cx="16" cy="17" rx="11.5" ry="13" fill="#1d2f40" stroke="#f6f1e6" stroke-width="1.6"/><path d="M5.8 14.5 Q1.5 21 5.8 27 Q8 21.5 7 15.5Z" fill="#1d2f40"/><path d="M26.2 14.5 Q30.5 21 26.2 27 Q24 21.5 25 15.5Z" fill="#1d2f40"/><ellipse cx="16" cy="19.5" rx="7.2" ry="9.5" fill="#fbfdff"/><ellipse cx="12.6" cy="12" rx="3.3" ry="3.5" fill="#fbfdff"/><ellipse cx="19.4" cy="12" rx="3.3" ry="3.5" fill="#fbfdff"/><circle cx="13" cy="12.2" r="1.3" fill="#1d2f40"/><circle cx="19" cy="12.2" r="1.3" fill="#1d2f40"/><path d="M13.4 15.2 Q16 13.6 18.6 15.2 L16 19.2Z" fill="#f08a24"/><ellipse cx="11.5" cy="30.6" rx="4.2" ry="1.7" fill="#f08a24"/><ellipse cx="20.5" cy="30.6" rx="4.2" ry="1.7" fill="#f08a24"/>
-</g>
+<ellipse cx="16" cy="17" rx="11.5" ry="13" fill="#1d2f40"/><path d="M5.8 14.5 Q1.5 21 5.8 27 Q8 21.5 7 15.5Z" fill="#1d2f40"/><path d="M26.2 14.5 Q30.5 21 26.2 27 Q24 21.5 25 15.5Z" fill="#1d2f40"/><ellipse cx="16" cy="19.5" rx="7.2" ry="9.5" fill="#fbfdff"/><ellipse cx="12.6" cy="12" rx="3.3" ry="3.5" fill="#fbfdff"/><ellipse cx="19.4" cy="12" rx="3.3" ry="3.5" fill="#fbfdff"/><circle cx="13" cy="12.2" r="1.3" fill="#1d2f40"/><circle cx="19" cy="12.2" r="1.3" fill="#1d2f40"/><path d="M13.4 15.2 Q16 13.6 18.6 15.2 L16 19.2Z" fill="#f08a24"/><ellipse cx="11.5" cy="30.6" rx="4.2" ry="1.7" fill="#f08a24"/><ellipse cx="20.5" cy="30.6" rx="4.2" ry="1.7" fill="#f08a24"/>
+<!-- strap around the neck -->
+<path d="M9.2 21.5 Q9.6 16.2 12 17.4 M22.8 21.5 Q22.4 16.2 20 17.4" fill="none" stroke="#d94d2a" stroke-width="0.9" stroke-linecap="round"/>
+<!-- camera held at the belly -->
+<rect x="13.2" y="18.6" width="3.6" height="1.8" rx="0.5" fill="#1a1614"/>
+<rect x="8.2" y="19.8" width="15.6" height="9.4" rx="1.8" fill="#1a1614"/>
+<rect x="8.2" y="21.6" width="15.6" height="1.1" fill="#d94d2a"/>
+<circle cx="16" cy="24.6" r="3.6" fill="#f6f1e6"/>
+<circle cx="16" cy="24.6" r="2.5" fill="#1d2f40"/>
+<circle cx="15.1" cy="23.7" r="0.8" fill="#9fc6e0"/>
+<circle cx="21.6" cy="21" r="0.6" fill="#f0c12b"/>
+<!-- flipper tips gripping the camera -->
+<path d="M7 20.5 Q5.6 24 8.6 26.4 Q9.6 23.5 8.8 20.6Z" fill="#1d2f40"/><path d="M25 20.5 Q26.4 24 23.4 26.4 Q22.4 23.5 23.2 20.6Z" fill="#1d2f40"/>
 </svg>
