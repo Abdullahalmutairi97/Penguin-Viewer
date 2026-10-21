@@ -90,7 +90,9 @@ jobs:
           echo "FFMPEG_DIR=C:/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0" >> $GITHUB_ENV
           echo "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> $GITHUB_ENV
       # The tests run on Linux; they need a GPU to render, which this runner lacks.
+      # PowerShell again, so rustc links with MSVC's link.exe rather than Git Bash's.
       - run: cargo build --release --locked
+        shell: pwsh
       - name: Bundle
         run: |
           d=dist/penguin-viewer
