@@ -68,15 +68,19 @@ jobs:
           choco install nasm pkgconfiglite -y --no-progress
           echo "/c/Program Files/NASM" >> $GITHUB_PATH
       - name: dav1d
+        # PowerShell, not bash: Git Bash puts its own link.exe ahead of MSVC's.
+        shell: pwsh
         run: |
-          git clone -q --depth 1 -b $DAV1D https://code.videolan.org/videolan/dav1d.git /c/dav1d-src
+          git clone -q --depth 1 -b $env:DAV1D https://code.videolan.org/videolan/dav1d.git C:\dav1d-src
           # b_vscrt=mt: the same static C runtime as the app (.cargo/config.toml).
-          meson setup /c/dav1d-src/build /c/dav1d-src --prefix=C:/dav1d --libdir=lib -Ddefault_library=static \
+          meson setup C:\dav1d-src\build C:\dav1d-src --prefix=C:/dav1d --libdir=lib -Ddefault_library=static `
             -Db_vscrt=mt -Denable_tools=false -Denable_tests=false --buildtype=release
-          ninja -C /c/dav1d-src/build install
+          if ($LASTEXITCODE) { exit 1 }
+          ninja -C C:\dav1d-src\build install
+          if ($LASTEXITCODE) { exit 1 }
           # meson names it libdav1d.a; the MSVC linker looks for dav1d.lib.
-          cp /c/dav1d/lib/libdav1d.a /c/dav1d/lib/dav1d.lib
-          echo "PKG_CONFIG_PATH=C:/dav1d/lib/pkgconfig" >> $GITHUB_ENV
+          Copy-Item C:\dav1d\lib\libdav1d.a C:\dav1d\lib\dav1d.lib
+          "PKG_CONFIG_PATH=C:/dav1d/lib/pkgconfig" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: ffmpeg
         # ffmpeg's own build needs a Unix shell, so Windows links a ready-made LGPL ffmpeg 9.0
         # and ships its DLLs.
