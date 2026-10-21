@@ -1,4 +1,5 @@
 use crate::files;
+use crate::player::Player;
 use eframe::egui::{
     self, Align2, Color32, ColorImage, CornerRadius, CursorIcon, FontData, FontDefinitions,
     FontFamily, FontId, Key, Painter, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions,
@@ -15,6 +16,7 @@ const BG: Color32 = Color32::from_rgb(0x14, 0x11, 0x0f);
 const BAR: Color32 = Color32::from_rgba_premultiplied(0x22, 0x1d, 0x1a, 0xee);
 const INK: Color32 = Color32::from_rgb(0xf0, 0xec, 0xe2);
 const INK_3: Color32 = Color32::from_rgb(0x8a, 0x82, 0x78);
+const ACCENT: Color32 = Color32::from_rgb(0xd9, 0x4d, 0x2a);
 const LINE: Color32 = Color32::from_rgb(0x3a, 0x33, 0x2e);
 const HOVER: Color32 = Color32::from_rgba_premultiplied(0x3a, 0x33, 0x2e, 0xff);
 
@@ -39,6 +41,10 @@ pub struct Viewer {
     files: Vec<PathBuf>,
     idx: usize,
     cache: HashMap<PathBuf, Slot>,
+    /// the video being played, when the current file is one
+    video: Option<(PathBuf, Player)>,
+    /// a video that could not be started
+    video_err: Option<(PathBuf, String)>,
     tx: Sender<(PathBuf, Decoded)>,
     rx: Receiver<(PathBuf, Decoded)>,
     /// pixels on screen per image pixel; None = fit to the window
@@ -61,6 +67,8 @@ impl Viewer {
             files: Vec::new(),
             idx: 0,
             cache: HashMap::new(),
+            video: None,
+            video_err: None,
             tx,
             rx,
             zoom: None,
@@ -121,6 +129,7 @@ impl Viewer {
         let want: Vec<PathBuf> = [0isize, 1, -1, 2]
             .iter()
             .map(|d| self.files[(self.idx as isize + d).rem_euclid(n as isize) as usize].clone())
+            .filter(|p| !files::is_video(p))
             .collect();
         self.cache.retain(|p, _| want.contains(p));
         let max = ctx.input(|i| i.max_texture_side).min(16384);
@@ -135,6 +144,28 @@ impl Viewer {
                 let _ = tx.send((p, r));
                 ctx.request_repaint();
             });
+        }
+    }
+
+    /// Keep exactly one player: for the current file when it is a video, none otherwise.
+    fn sync_video(&mut self, ctx: &egui::Context) {
+        let want = self.current().filter(|p| files::is_video(p)).cloned();
+        let have = self.video.as_ref().map(|v| &v.0).or(self.video_err.as_ref().map(|v| &v.0));
+        if have == want.as_ref() {
+            return;
+        }
+        // drop the old one first so its sound stops before the next starts
+        self.video = None;
+        self.video_err = None;
+        if let Some(p) = want {
+            match Player::new(&p, ctx) {
+                Ok(pl) => {
+                    // phone videos are stored sideways with a note to turn them
+                    self.rot = pl.turn;
+                    self.video = Some((p, pl));
+                }
+                Err(e) => self.video_err = Some((p, e)),
+            }
         }
     }
 
@@ -194,6 +225,10 @@ impl Viewer {
         self.load_around(&ctx);
         self.keys(&ctx);
         self.load_around(&ctx);
+        self.sync_video(&ctx);
+        if let Some((_, v)) = &mut self.video {
+            v.poll(&ctx);
+        }
 
         ui.painter().rect_filled(full, CornerRadius::ZERO, BG);
         let now = ctx.input(|i| i.time);
@@ -213,7 +248,18 @@ impl Viewer {
         }
 
         let mut has_pic = false;
+        let playing = self.current().is_some_and(|p| files::is_video(p));
         match self.current().and_then(|p| self.cache.get(p)) {
+            _ if playing => {
+                if let Some(e) = self.video_err.as_ref().map(|v| v.1.clone()) {
+                    message(ui.painter(), full, "Can't play this video", &e);
+                } else if self.shown().is_some() {
+                    has_pic = true;
+                    self.image(ui, full);
+                } else {
+                    ui.painter().text(full.center(), Align2::CENTER_CENTER, "loading…", FontId::proportional(18.0), INK_3);
+                }
+            }
             Some(Slot::Ready(_)) => {
                 has_pic = true;
                 self.image(ui, full);
@@ -235,12 +281,13 @@ impl Viewer {
         }
 
         let idle = now - self.moved_at;
-        let show = !has_pic || idle < BAR_IDLE || ctx.input(|i| i.pointer.any_down());
+        let paused = self.video.as_ref().is_some_and(|v| v.1.paused);
+        let show = !has_pic || paused || idle < BAR_IDLE || ctx.input(|i| i.pointer.any_down());
         let a = ctx.animate_bool_with_time(egui::Id::new("bar"), show, 0.18);
         if a > 0.0 && !self.files.is_empty() {
             self.bar(ui, full, a);
         }
-        if show && has_pic {
+        if show && has_pic && !paused {
             ctx.request_repaint_after(std::time::Duration::from_secs_f64(BAR_IDLE - idle + 0.05));
         }
         if !show && has_pic {
@@ -250,11 +297,30 @@ impl Viewer {
 
     fn keys(&mut self, ctx: &egui::Context) {
         let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        let video = self.video.is_some();
         let (k, shift) = ctx.input(|i| {
             let pressed = |ks: &[Key]| ks.iter().any(|k| i.key_pressed(*k));
-            let k = if pressed(&[Key::ArrowRight, Key::ArrowDown, Key::Space, Key::PageDown]) {
+            // in a video the arrows and space belong to the player; next / previous move to the page keys
+            let (nx, pv): (&[Key], &[Key]) = if video {
+                (&[Key::PageDown, Key::N], &[Key::Backspace, Key::PageUp, Key::P])
+            } else {
+                (&[Key::ArrowRight, Key::ArrowDown, Key::Space, Key::PageDown], &[Key::ArrowLeft, Key::ArrowUp, Key::Backspace, Key::PageUp])
+            };
+            let k = if video && pressed(&[Key::Space, Key::K]) {
+                "pause"
+            } else if video && pressed(&[Key::ArrowRight]) {
+                "seek+"
+            } else if video && pressed(&[Key::ArrowLeft]) {
+                "seek-"
+            } else if video && pressed(&[Key::ArrowUp]) {
+                "vol+"
+            } else if video && pressed(&[Key::ArrowDown]) {
+                "vol-"
+            } else if video && pressed(&[Key::M]) {
+                "mute"
+            } else if pressed(nx) {
                 "next"
-            } else if pressed(&[Key::ArrowLeft, Key::ArrowUp, Key::Backspace, Key::PageUp]) {
+            } else if pressed(pv) {
                 "prev"
             } else if pressed(&[Key::Home]) {
                 "first"
@@ -282,7 +348,20 @@ impl Viewer {
             (k, i.modifiers.shift)
         });
         let center = ctx.content_rect().center();
+        let seek = if shift { 30.0 } else { 5.0 };
         match k {
+            "pause" | "seek+" | "seek-" | "vol+" | "vol-" | "mute" => {
+                if let Some((_, v)) = &mut self.video {
+                    match k {
+                        "pause" => v.toggle_pause(),
+                        "seek+" => v.seek_by(seek),
+                        "seek-" => v.seek_by(-seek),
+                        "vol+" => v.set_volume(v.volume + 5.0),
+                        "vol-" => v.set_volume(v.volume - 5.0),
+                        _ => v.toggle_mute(),
+                    }
+                }
+            }
             "next" => self.step(1),
             "prev" => self.step(-1),
             "first" => self.go(0),
@@ -299,11 +378,19 @@ impl Viewer {
         }
     }
 
-    fn pic_size(&self) -> Option<Vec2> {
+    /// The texture on screen (an image, or the video's current frame) and its size in file pixels.
+    fn shown(&self) -> Option<(&TextureHandle, Vec2)> {
+        if let Some((_, v)) = &self.video {
+            return v.frame();
+        }
         match self.current().and_then(|p| self.cache.get(p)) {
-            Some(Slot::Ready(p)) => Some(if self.rot % 2 == 1 { vec2(p.size.y, p.size.x) } else { p.size }),
+            Some(Slot::Ready(p)) => Some((&p.tex, p.size)),
             _ => None,
         }
+    }
+
+    fn pic_size(&self) -> Option<Vec2> {
+        self.shown().map(|(_, s)| if self.rot % 2 == 1 { vec2(s.y, s.x) } else { s })
     }
 
     fn fit_scale(&self, view: Rect) -> f32 {
@@ -363,7 +450,15 @@ impl Viewer {
                 self.zoom_by(&ctx, f, at);
             }
         }
-        if resp.double_clicked() {
+        if let Some((_, v)) = &mut self.video {
+            if resp.clicked() {
+                v.toggle_pause();
+            }
+            if resp.double_clicked() {
+                let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+                ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!full));
+            }
+        } else if resp.double_clicked() {
             match (self.zoom, resp.interact_pointer_pos()) {
                 (Some(_), _) => self.fit(),
                 (None, Some(at)) => self.actual(&ctx, at),
@@ -379,13 +474,13 @@ impl Viewer {
             ctx.set_cursor_icon(if resp.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab });
         }
 
-        let Some(Slot::Ready(pic)) = self.current().and_then(|p| self.cache.get(p)) else { return };
+        let Some((tex, size)) = self.shown() else { return };
         let scale = self.scale(view);
-        let rect = Rect::from_center_size(view.center() + self.pan, pic.size * scale);
+        let rect = Rect::from_center_size(view.center() + self.pan, size * scale);
         let angle = self.rot as f32 * std::f32::consts::FRAC_PI_2;
         // smooth when shrinking, sharp pixels when blown up past 200%
         let opts = if scale > 2.0 { TextureOptions::NEAREST } else { TextureOptions::LINEAR };
-        egui::Image::from_texture(egui::load::SizedTexture::from_handle(&pic.tex))
+        egui::Image::from_texture(egui::load::SizedTexture::from_handle(tex))
             .texture_options(opts)
             .rotate(angle, Vec2::splat(0.5))
             .paint_at(ui, rect);
@@ -401,7 +496,7 @@ impl Viewer {
                 Color32::WHITE,
             );
         }
-        p.text(c + vec2(0.0, 22.0), Align2::CENTER_CENTER, "Drop an image here", FontId::new(26.0, bold()), INK);
+        p.text(c + vec2(0.0, 22.0), Align2::CENTER_CENTER, "Drop an image or video here", FontId::new(26.0, bold()), INK);
         p.text(
             c + vec2(0.0, 54.0),
             Align2::CENTER_CENTER,
@@ -467,6 +562,64 @@ impl Viewer {
             self.step(1);
         }
 
+        if let Some((_, v)) = &mut self.video {
+            // ---- bottom: ▶  0:42 ────●──── 3:10   🔊 ───  fullscreen
+            let bw = avail.min(760.0);
+            let bot = Rect::from_center_size(pos2(view.center().x, view.bottom() - 14.0 - h / 2.0 + slide), vec2(bw, h));
+            pill(ui, "bottom", bot);
+            let (mut x, y) = (bot.left() + pad, bot.center().y);
+            let playing = !v.paused && !v.ended;
+            if button(ui, &mut x, y, if playing { Icon::Pause } else { Icon::Play }, "play / pause  space") {
+                v.toggle_pause();
+            }
+            let vol_w = if bw >= 520.0 { 72.0 } else { 0.0 };
+            let right = b + b + if vol_w > 0.0 { vol_w + gap } else { 0.0 };
+            let mut rx = bot.right() - pad - right;
+            let (cur, tot) = (clock(v.pos, v.dur), clock(v.dur, v.dur));
+            let font = FontId::proportional(15.0);
+            let tw = p.layout_no_wrap(clock(v.dur, v.dur), font.clone(), INK_3).size().x;
+            let track_w = rx - x - gap - 2.0 * gap;
+            let labels = track_w - 2.0 * (tw + gap) >= 60.0;
+            let (xa, xb) = if labels { (x + gap + tw + gap, rx - gap - tw - gap) } else { (x + gap, rx - gap) };
+            if labels {
+                p.text(pos2(x + gap + tw, y), Align2::RIGHT_CENTER, cur, font.clone(), fade(INK_3));
+                p.text(pos2(xb + gap, y), Align2::LEFT_CENTER, tot, font, fade(INK_3));
+            }
+            if xb - xa > 20.0 && v.dur > 0.0 {
+                let hit = Rect::from_min_max(pos2(xa - 6.0, y - 14.0), pos2(xb + 6.0, y + 14.0));
+                let r = ui.interact(hit, egui::Id::new("seek"), Sense::click_and_drag());
+                if let Some(pt) = r.interact_pointer_pos().filter(|_| r.is_pointer_button_down_on() || r.clicked()) {
+                    v.seek_to(((pt.x - xa) / (xb - xa)).clamp(0.0, 1.0) as f64 * v.dur);
+                }
+                if r.hovered() {
+                    ctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                slider(&p, xa, xb, y, (v.pos / v.dur).clamp(0.0, 1.0) as f32, r.hovered() || r.dragged(), a);
+            }
+            if button(ui, &mut rx, y, if v.muted || v.volume == 0.0 { Icon::Muted } else { Icon::Volume }, "mute  M") {
+                v.toggle_mute();
+            }
+            if vol_w > 0.0 {
+                let (va, vb) = (rx + 4.0, rx + vol_w);
+                let hit = Rect::from_min_max(pos2(va - 6.0, y - 14.0), pos2(vb + 6.0, y + 14.0));
+                let r = ui.interact(hit, egui::Id::new("volume"), Sense::click_and_drag());
+                if let Some(pt) = r.interact_pointer_pos().filter(|_| r.is_pointer_button_down_on() || r.clicked()) {
+                    v.set_volume(((pt.x - va) / (vb - va)).clamp(0.0, 1.0) as f64 * 100.0);
+                }
+                if r.hovered() {
+                    ctx.set_cursor_icon(CursorIcon::PointingHand);
+                }
+                let level = if v.muted { 0.0 } else { (v.volume / 100.0) as f32 };
+                slider(&p, va, vb, y, level, r.hovered() || r.dragged(), a);
+                rx += vol_w + gap;
+            }
+            let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+            if button(ui, &mut rx, y, Icon::Full, "fullscreen  F") {
+                ctx.send_viewport_cmd(ViewportCommand::Fullscreen(!full));
+            }
+            return;
+        }
+
         // ---- bottom: 1600×900  62%  |  fit  1:1  rotate  fullscreen   (drops the size, then the zoom)
         let Some(s) = self.pic_size() else { return };
         let tools = 4.0 * b;
@@ -502,8 +655,27 @@ impl Viewer {
     }
 }
 
+/// A thin track from `xa` to `xb`, filled to `level` (0..=1), with a knob that grows under the pointer.
+fn slider(p: &Painter, xa: f32, xb: f32, y: f32, level: f32, active: bool, a: f32) {
+    let fade = |c: Color32| c.gamma_multiply(a);
+    let x = xa + (xb - xa) * level;
+    p.rect_filled(Rect::from_min_max(pos2(xa, y - 2.0), pos2(xb, y + 2.0)), CornerRadius::same(2), fade(LINE));
+    p.rect_filled(Rect::from_min_max(pos2(xa, y - 2.0), pos2(x, y + 2.0)), CornerRadius::same(2), fade(ACCENT));
+    p.circle_filled(pos2(x, y), if active { 7.0 } else { 5.0 }, fade(INK));
+}
+
+/// 3:07, or 1:02:09 when the whole video is an hour or more.
+fn clock(secs: f64, total: f64) -> String {
+    let (s, t) = (secs.max(0.0) as u64, total.max(0.0) as u64);
+    if t >= 3600 { format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60) } else { format!("{}:{:02}", s / 60, s % 60) }
+}
+
 #[derive(Clone, Copy)]
 enum Icon {
+    Play,
+    Pause,
+    Volume,
+    Muted,
     Prev,
     Next,
     Fit,
@@ -516,6 +688,33 @@ fn paint_icon(p: &Painter, r: Rect, icon: Icon, c: Color32) {
     let s = Stroke::new(2.0, c);
     let (l, t, rt, bt, m) = (r.left(), r.top(), r.right(), r.bottom(), r.center());
     match icon {
+        Icon::Play => {
+            let pts = vec![pos2(m.x - 5.0, t), pos2(m.x + 6.0, m.y), pos2(m.x - 5.0, bt)];
+            p.add(egui::Shape::convex_polygon(pts, c, Stroke::NONE));
+        }
+        Icon::Pause => {
+            for dx in [-4.5, 1.5] {
+                p.rect_filled(Rect::from_min_max(pos2(m.x + dx, t), pos2(m.x + dx + 3.0, bt)), CornerRadius::same(1), c);
+            }
+        }
+        Icon::Volume | Icon::Muted => {
+            let cone = vec![pos2(l, m.y - 3.0), pos2(l + 4.0, m.y - 3.0), pos2(m.x + 1.0, t), pos2(m.x + 1.0, bt), pos2(l + 4.0, m.y + 3.0), pos2(l, m.y + 3.0)];
+            p.add(egui::Shape::convex_polygon(cone, c, Stroke::NONE));
+            if matches!(icon, Icon::Muted) {
+                p.line(vec![pos2(m.x + 4.0, m.y - 4.0), pos2(rt, m.y + 4.0)], s);
+                p.line(vec![pos2(m.x + 4.0, m.y + 4.0), pos2(rt, m.y - 4.0)], s);
+            } else {
+                for k in [4.0, 8.0] {
+                    let pts: Vec<Pos2> = (0..=8)
+                        .map(|i| {
+                            let a = -0.9 + i as f32 / 8.0 * 1.8;
+                            pos2(m.x + 1.0 + a.cos() * k - 1.0, m.y + a.sin() * k)
+                        })
+                        .collect();
+                    p.line(pts, Stroke::new(1.6, c));
+                }
+            }
+        }
         Icon::Prev => {
             p.line(vec![pos2(m.x + 3.0, t), pos2(m.x - 4.0, m.y), pos2(m.x + 3.0, bt)], s);
         }
@@ -784,6 +983,56 @@ mod tests {
             h.run_steps(3);
             shot(&mut h, name);
         }
+    }
+
+    /// A silent 4 second clip next to an image, to check the player in the viewer.
+    #[test]
+    fn plays_video() {
+        let d = std::env::temp_dir().join(format!("penguin-viewer-video-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let clip = d.join("b-clip.mp4");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25", "-t", "4", "-pix_fmt", "yuv420p"])
+            .arg(&clip)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            return;
+        }
+        image::RgbImage::from_pixel(40, 40, image::Rgb([200, 80, 40])).save(d.join("a.png")).unwrap();
+        std::fs::write(d.join("c-broken.mkv"), b"not a video").unwrap();
+        let mut h = Harness::builder().with_size([1000.0, 700.0]).wgpu().build_ui_state(|ui, v: &mut Viewer| v.draw(ui), Viewer::new(Some(clip)));
+        let until = |h: &mut Harness<'_, Viewer>, f: &dyn Fn(&Viewer) -> bool| {
+            for _ in 0..100 {
+                h.run_steps(1);
+                if f(h.state()) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            panic!("timed out");
+        };
+        until(&mut h, &|v| v.video.as_ref().is_some_and(|(_, p)| p.pos > 0.3));
+        assert_eq!(h.state().pic_size(), Some(vec2(640.0, 360.0)));
+        shot(&mut h, "11-video");
+
+        h.key_press(Key::Space);
+        until(&mut h, &|v| v.video.as_ref().is_some_and(|(_, p)| p.paused));
+        h.key_press(Key::ArrowRight);
+        h.run_steps(2);
+        shot(&mut h, "12-video-paused");
+
+        // page keys browse, the broken one reports why
+        h.key_press(Key::PageDown);
+        until(&mut h, &|v| v.video_err.is_some());
+        h.run_steps(2);
+        shot(&mut h, "13-video-broken");
+        h.key_press(Key::PageUp);
+        h.run_steps(2);
+        assert_eq!(h.state().idx, 1);
+        h.key_press(Key::PageUp);
+        h.run_steps(2);
+        assert!(h.state().video.is_none());
     }
 
     #[test]

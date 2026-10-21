@@ -7,6 +7,9 @@ edition = "2024"
 eframe = "0.36.2"
 image = { version = "0.25.10", features = ["avif-native"] }
 resvg = "0.48.1"
+# ffmpeg is compiled from source and linked into the binary: no ffmpeg or mpv needed at runtime
+ffmpeg-next = { version = "9.0.0", features = ["build", "static", "build-lib-dav1d"] }
+cpal = "0.18.2"
 
 [profile.release]
 opt-level = 3

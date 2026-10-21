@@ -7,13 +7,27 @@ const EXTS: &[&str] = &[
     "pnm", "pbm", "pgm", "ppm", "hdr", "exr", "dds", "ff", "avif", "svg", "svgz",
 ];
 
-pub fn is_image(p: &Path) -> bool {
+/// Containers mpv plays. No "ts": it is far more often TypeScript.
+const VIDEO_EXTS: &[&str] = &[
+    "mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "flv", "f4v", "ogv", "mpg", "mpeg", "m2ts", "mts",
+    "3gp", "divx", "asf", "vob",
+];
+
+fn has_ext(p: &Path, list: &[&str]) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        .is_some_and(|e| list.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-/// The images next to `path` (or inside it, for a folder) in natural order, and where `path` sits.
+pub fn is_image(p: &Path) -> bool {
+    has_ext(p, EXTS)
+}
+
+pub fn is_video(p: &Path) -> bool {
+    has_ext(p, VIDEO_EXTS)
+}
+
+/// The images and videos next to `path` (or inside it, for a folder) in natural order, and where `path` sits.
 pub fn siblings(path: &Path) -> (Vec<PathBuf>, usize) {
     let (dir, target) = if path.is_dir() {
         (path.to_path_buf(), None)
@@ -25,7 +39,7 @@ pub fn siblings(path: &Path) -> (Vec<PathBuf>, usize) {
         .map(|rd| {
             rd.flatten()
                 .map(|e| e.path())
-                .filter(|p| p.is_file() && is_image(p))
+                .filter(|p| p.is_file() && (is_image(p) || is_video(p)))
                 .collect()
         })
         .unwrap_or_default();
@@ -96,5 +110,8 @@ mod tests {
         assert!(is_image(Path::new("a.webp")));
         assert!(!is_image(Path::new("notes.md")));
         assert!(!is_image(Path::new("noext")));
+        assert!(is_video(Path::new("x/Clip.MKV")));
+        assert!(!is_video(Path::new("app.ts")));
+        assert!(!is_video(Path::new("a.png")));
     }
 }

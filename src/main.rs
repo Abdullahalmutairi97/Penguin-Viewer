@@ -1,4 +1,5 @@
 mod files;
+mod player;
 mod viewer;
 
 fn main() -> eframe::Result {
