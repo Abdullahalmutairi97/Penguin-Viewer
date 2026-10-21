@@ -1,0 +1,123 @@
+# Builds the downloads. Push a tag like v0.1.0 to publish them as a GitHub release;
+# run it by hand (Actions > Release > Run workflow) to only build and test them.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # AV1 decoder, linked in statically (AVIF pictures, AV1 videos).
+  DAV1D: "1.5.0"
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  linux:
+    # The oldest supported runner: the app then runs on any distro with glibc 2.35 or newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # ffmpeg (the program) makes the test videos; mesa-vulkan-drivers lets the UI tests render.
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm ninja-build pkg-config libasound2-dev libclang-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libgl1-mesa-dev mesa-vulkan-drivers ffmpeg
+          pip install meson
+      - name: dav1d
+        run: |
+          git clone -q --depth 1 -b $DAV1D https://code.videolan.org/videolan/dav1d.git /tmp/dav1d
+          meson setup /tmp/dav1d/build /tmp/dav1d --prefix=$HOME/dav1d --libdir=lib -Ddefault_library=static \
+            -Denable_tools=false -Denable_tests=false --buildtype=release
+          ninja -C /tmp/dav1d/build install
+          echo "PKG_CONFIG_PATH=$HOME/dav1d/lib/pkgconfig" >> $GITHUB_ENV
+      - run: cargo build --release --locked
+      - run: cargo test --release --locked
+      - name: Bundle
+        run: |
+          ! ldd target/release/penguin-viewer | grep -E "dav1d|avcodec"   # all built in
+          d=dist/penguin-viewer
+          mkdir -p $d
+          cp target/release/penguin-viewer assets/icon.png packaging/linux/install.sh $d/
+          tar -czf dist/penguin-viewer-linux-x86_64.tar.gz -C dist penguin-viewer
+          cp packaging/linux/install.sh dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/penguin-viewer-linux-x86_64.tar.gz
+            dist/install.sh
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+      - run: |
+          pip install meson ninja
+          choco install nasm pkgconfiglite -y --no-progress
+          echo "/c/Program Files/NASM" >> $GITHUB_PATH
+      - name: dav1d
+        run: |
+          git clone -q --depth 1 -b $DAV1D https://code.videolan.org/videolan/dav1d.git /c/dav1d-src
+          # b_vscrt=mt: the same static C runtime as the app (.cargo/config.toml).
+          meson setup /c/dav1d-src/build /c/dav1d-src --prefix=C:/dav1d --libdir=lib -Ddefault_library=static \
+            -Db_vscrt=mt -Denable_tools=false -Denable_tests=false --buildtype=release
+          ninja -C /c/dav1d-src/build install
+          # meson names it libdav1d.a; the MSVC linker looks for dav1d.lib.
+          cp /c/dav1d/lib/libdav1d.a /c/dav1d/lib/dav1d.lib
+          echo "PKG_CONFIG_PATH=C:/dav1d/lib/pkgconfig" >> $GITHUB_ENV
+      - name: ffmpeg
+        # ffmpeg's own build needs a Unix shell, so Windows links a ready-made LGPL ffmpeg 9.0
+        # and ships its DLLs.
+        run: |
+          gh release download latest -R BtbN/FFmpeg-Builds -p 'ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip' -D /tmp
+          unzip -q /tmp/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0.zip -d /c/
+          echo "FFMPEG_DIR=C:/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0" >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=C:/Program Files/LLVM/bin" >> $GITHUB_ENV
+      # The tests run on Linux; they need a GPU to render, which this runner lacks.
+      - run: cargo build --release --locked
+      - name: Bundle
+        run: |
+          d=dist/penguin-viewer
+          mkdir -p $d
+          cp target/release/penguin-viewer.exe $d/
+          cp /c/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0/bin/*.dll $d/
+          cp /c/ffmpeg-n9.0-latest-win64-lgpl-shared-9.0/LICENSE.txt $d/ffmpeg-LICENSE.txt 2>/dev/null || true
+      - name: Installer
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          iscc=$(ls "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" 2>/dev/null || true)
+          if [ -z "$iscc" ]; then choco install innosetup -y --no-progress; iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"; fi
+          "$iscc" "//DVersion=$v" "//DDist=$(cygpath -w "$PWD/dist")" packaging/windows/penguin-viewer.iss
+          (cd dist && 7z a -tzip penguin-viewer-windows-x64.zip penguin-viewer > /dev/null)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/PenguinViewer-Setup.exe
+            dist/penguin-viewer-windows-x64.zip
+
+  release:
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Penguin Viewer ${GITHUB_REF_NAME#v}" --notes-file packaging/release-notes.md

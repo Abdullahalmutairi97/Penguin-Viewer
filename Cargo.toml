@@ -7,9 +7,19 @@ edition = "2024"
 eframe = "0.36.2"
 image = { version = "0.25.10", features = ["avif-native"] }
 resvg = "0.48.1"
-# ffmpeg is compiled from source and linked into the binary: no ffmpeg or mpv needed at runtime
-ffmpeg-next = { version = "9.0.0", features = ["build", "static", "build-lib-dav1d"] }
 cpal = "0.18.2"
+
+# Linux: ffmpeg is compiled from source and linked into the binary: no ffmpeg or mpv needed at runtime.
+[target.'cfg(not(windows))'.dependencies]
+ffmpeg-next = { version = "9.0.0", features = ["build", "static", "build-lib-dav1d"] }
+
+# Windows: ffmpeg's build needs a Unix shell, so the release links a ready-made ffmpeg 9.0
+# (FFMPEG_DIR) and ships its DLLs beside the .exe.
+[target.'cfg(windows)'.dependencies]
+ffmpeg-next = "9.0.0"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 opt-level = 3

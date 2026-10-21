@@ -1,3 +1,6 @@
+// No console window behind the app on Windows.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod files;
 mod player;
 mod viewer;
